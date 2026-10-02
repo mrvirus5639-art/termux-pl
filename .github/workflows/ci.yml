@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Import check
+        run: |
+          python -c "import termuxpl.app"
+          termuxpl --version
+      - name: Tests
+        run: python -m pytest -q
