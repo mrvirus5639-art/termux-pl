@@ -10,6 +10,8 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-03
+
 ### Added
 - Switch the artwork between the album cover and the rotating CD with `c`, by
   clicking the artwork, or in Settings. The choice is remembered. Tracks without
@@ -44,5 +46,6 @@ turns that section into the next version.
   scoop, choco), with a bundled `imageio-ffmpeg` fallback. `TERMUXPL_FFMPEG`
   overrides the choice.
 
-[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mrvirus5639-art/termux-pl/releases/tag/v1.0.0
