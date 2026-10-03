@@ -12,6 +12,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Button, DataTable, Input, Label, Static
 
 from . import lyrics as lyrics_mod
@@ -56,6 +57,7 @@ class TermuxPL(App):
         Binding("plus,equals_sign", "volume(5)", "Vol+"),
         Binding("minus,underscore", "volume(-5)", "Vol-"),
         Binding("l", "toggle_lyrics", "Lyrics"),
+        Binding("c", "toggle_art", "Cover/CD"),
         Binding("N", "toggle_normalize", "Normalize"),
         Binding("m", "toggle_mono", "Stereo/Mono"),
         Binding("a", "enqueue_selected", "Queue"),
@@ -101,7 +103,7 @@ class TermuxPL(App):
     # ----------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
         with Horizontal(id="top"):
-            yield ArtView(id="art")
+            yield ArtView(mode=self.cfg.art_mode, id="art")
             yield Separator(id="sep")
             with Vertical(id="infocol"):
                 yield InfoView(id="info")
@@ -153,7 +155,7 @@ class TermuxPL(App):
         self._apply_lyrics_visibility()
         self.query_one("#info", InfoView).show(None, "Scanning library…" if self.cfg.music_dirs else
                                                "Currently No Track Loaded")
-        self.set_interval(1 / 20, self._tick)
+        self._ticker = self.set_interval(1 / 20, self._tick)
         self.scan_library()
         res.focus()
         hint = "space play/pause · n/b next/prev · x shuffle-next · / search · o online · ? manual"
@@ -563,6 +565,22 @@ class TermuxPL(App):
         self._apply_lyrics_visibility()
         self._status(f"Lyrics {'on' if self.cfg.lyrics else 'off'}")
 
+    def action_toggle_art(self) -> None:
+        self.cfg.art_mode = "disc" if self.cfg.art_mode == "album" else "album"
+        self.cfg.save()
+        art = self.query_one("#art", ArtView)
+        art.set_mode(self.cfg.art_mode)
+        if self.cfg.art_mode == "disc":
+            self._status("Artwork: rotating CD")
+        elif art.cover is None and self.now is not None:
+            self._status("Artwork: album cover (this track has none, so the CD stays)")
+        else:
+            self._status("Artwork: album cover")
+
+    @on(ArtView.Clicked)
+    def _art_clicked(self) -> None:
+        self.action_toggle_art()
+
     def _apply_lyrics_visibility(self) -> None:
         self.query_one("#lyrics").display = self.cfg.lyrics
         self.query_one("#idle").display = not self.cfg.lyrics
@@ -643,6 +661,7 @@ class TermuxPL(App):
                 self.engine.set_normalize(self.cfg.normalize)
                 self.engine.set_mono(self.cfg.mono)
                 self._apply_lyrics_visibility()
+                self.query_one("#art", ArtView).set_mode(self.cfg.art_mode)
                 self._update_volume()
                 self._show_info()
                 self.scan_library()
@@ -706,6 +725,14 @@ class TermuxPL(App):
 
     # ------------------------------------------------------------------ tick
     def _tick(self) -> None:
+        # The timer can fire once more while the app is shutting down, after the
+        # widgets are gone; skip that frame instead of crashing on exit.
+        try:
+            self._tick_frame()
+        except NoMatches:
+            pass
+
+    def _tick_frame(self) -> None:
         e = self.engine
         if e.error and e.error != self._last_error:
             self._last_error = e.error
@@ -735,6 +762,9 @@ class TermuxPL(App):
             btn.label = want
 
     def on_unmount(self) -> None:
+        ticker = getattr(self, "_ticker", None)
+        if ticker is not None:
+            ticker.stop()
         self.engine.close()
 
 

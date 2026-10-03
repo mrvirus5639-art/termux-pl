@@ -48,6 +48,7 @@ class Config:
     loudness_target: float = -14.0   # LUFS
     mono: bool = False               # False = stereo output
     lyrics: bool = True
+    art_mode: str = "album"          # album (cover art) | disc (rotating CD)
     shuffle: bool = False
     repeat: str = "off"              # off | all | one
     sort: str = "folder"             # folder | title | artist | duration

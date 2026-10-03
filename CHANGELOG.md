@@ -10,6 +10,16 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+### Added
+- Switch the artwork between the album cover and the rotating CD with `c`, by
+  clicking the artwork, or in Settings. The choice is remembered. Tracks without
+  cover art still show the CD.
+
+### Fixed
+- An error in the audio callback no longer stops sound until restart; that
+  block is played as silence instead.
+- Quitting could print a "No nodes match" error from the screen refresh timer.
+
 ## [1.0.0] - 2026-10-02
 
 ### Added

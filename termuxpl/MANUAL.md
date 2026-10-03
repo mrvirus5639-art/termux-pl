@@ -8,7 +8,7 @@ volume bar (click or scroll the wheel over it).
 
 | Area | What it shows |
 |---|---|
-| **Top panel** | Cover art (or a spinning disc), track details, a live spectrum, and synced lyrics. With lyrics off, the right side becomes a large spectrum visualizer. |
+| **Top panel** | Album cover art or a rotating CD (switch with `c` or a click), track details, a live spectrum, and synced lyrics. With lyrics off, the right side becomes a large spectrum visualizer. |
 | **Progress bar** | The track's waveform. The bright part has played. `[ elapsed ]-[ length ]` sits on the frame. Click to seek. |
 | **Buttons** | `<<<` previous · `PLAY/PAUSE` · `>>>` next |
 | **Volume bar** | Click or scroll to set. The second line shows shuffle, repeat, stereo/mono and normalization state. |
@@ -34,6 +34,7 @@ volume bar (click or scroll the wheel over it).
 | `N` | Loudness normalization on/off (EBU R128, target set in Settings) |
 | `m` | Stereo / mono output |
 | `l` | Lyrics on/off |
+| `c` | Artwork: album cover ⇄ rotating CD (or click the artwork) |
 
 ### Library, search and queue
 
@@ -111,6 +112,7 @@ Every play is logged with a timestamp.
 * **Loudness normalization** and **Target LUFS** (default −14, streaming level).
 * **Mono output**: off means stereo.
 * **Show lyrics**, **Shuffle mode**.
+* **Album cover art**: off shows the rotating CD instead. Same as pressing `c`.
 * **Downloads** folder. It is added to your music folders automatically on the
   first download.
 * **AcoustID key**, and the number of **online hits** per search.

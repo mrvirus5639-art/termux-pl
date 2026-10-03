@@ -10,7 +10,7 @@ Termux PL is a fast, focused TUI with no unnecessary interface layers. It's keyb
 ## Features
 
 - **Local and online playback**: filter your library as you type (`/l:`), or search YouTube and stream (`/s:`)
-- **Dot-matrix visuals**: braille cover art (or a spinning disc), a live spectrum, and a waveform progress bar you can click to seek
+- **Dot-matrix visuals**: braille album cover art or a rotating CD (switch with `c`), a live spectrum, and a waveform progress bar you can click to seek
 - **Synced lyrics** from `.lrc` files or LRCLIB, highlighted line by line. Toggle with `l`.
 - **Queue**, plus **shuffle to a random next title** (`x`), shuffle mode (`z`) and repeat (`r`)
 - **Playlists** menu (`p`) for building `.m3u8` playlists from local or downloaded tracks
@@ -57,6 +57,7 @@ Press `s`, paste a music folder path, then **Save & rescan**. Your `Music` folde
 | `[` `]` / `,` `.` | seek ±10 s / ±5 s | `t` | sort library |
 | `+` / `-` | volume | `p` `e` `h` `s` | playlists, metadata, history, settings |
 | `l` / `N` / `m` | lyrics / normalize / mono | `?` · `q` | manual · quit |
+| `c` | album cover ⇄ rotating CD | | |
 
 ## How it works
 

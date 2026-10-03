@@ -121,7 +121,11 @@ class _NullOutput:
         period = BLOCK / self.samplerate
         nxt = time.perf_counter()
         while not self._stop.is_set():
-            self.callback(buf, BLOCK, None, None)
+            try:
+                self.callback(buf, BLOCK, None, None)
+            except Exception:
+                if self._stop.is_set():
+                    break
             nxt += period
             delay = nxt - time.perf_counter()
             if delay > 0:
@@ -259,6 +263,14 @@ class AudioEngine:
 
     # ---------------------------------------------------------------- callback
     def _callback(self, outdata, frames, _time, _status) -> None:
+        # Never let an exception escape: PortAudio stops the stream for good if
+        # the callback raises, which would silence the player until restart.
+        try:
+            self._fill(outdata, frames)
+        except Exception:
+            outdata.fill(0)
+
+    def _fill(self, outdata, frames) -> None:
         if self.paused or not self.loaded:
             outdata.fill(0)
             return

@@ -21,14 +21,38 @@ WHITE = "#f8fafc"
 
 
 class ArtView(Widget):
-    """Cover art (braille-dithered) or a spinning dot-matrix disc."""
+    """Album cover art (braille-dithered) or a rotating dot-matrix CD.
 
-    def __init__(self, **kw):
+    mode "album": show the track's cover art, falling back to the CD when the
+                  track has none.
+    mode "disc":  always show the rotating CD.
+    Clicking the panel asks the app to switch modes.
+    """
+
+    MODES = ("album", "disc")
+
+    class Clicked(Message):
+        pass
+
+    def __init__(self, mode: str = "album", **kw):
         super().__init__(**kw)
         self.cover: bytes | None = None
+        self.mode = mode if mode in self.MODES else "album"
         self.angle = 0.0
         self._cache_key = None
         self._cache_mask = None
+
+    @property
+    def showing_disc(self) -> bool:
+        return self.mode == "disc" or self.cover is None
+
+    def set_mode(self, mode: str) -> None:
+        if mode in self.MODES and mode != self.mode:
+            self.mode = mode
+            self.refresh()
+
+    def on_click(self, _event: events.Click) -> None:
+        self.post_message(self.Clicked())
 
     def set_cover(self, data: bytes | None) -> None:
         self.cover = data
@@ -36,7 +60,7 @@ class ArtView(Widget):
         self.refresh()
 
     def spin(self, delta: float) -> None:
-        if self.cover is None:
+        if self.showing_disc:
             self.angle = (self.angle + delta) % (2 * math.pi)
             self.refresh()
 
@@ -44,7 +68,7 @@ class ArtView(Widget):
         w, h = self.size.width, self.size.height
         if w < 4 or h < 3:
             return Text("")
-        if self.cover is not None:
+        if not self.showing_disc:
             key = (id(self.cover), w, h)
             if key != self._cache_key:
                 self._cache_mask = art.image_mask(self.cover, w, h)

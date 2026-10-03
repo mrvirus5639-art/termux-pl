@@ -423,6 +423,8 @@ class SettingsScreen(Menu):
                     for sid, label, val in (("s-norm", "Loudness normalization", c.normalize),
                                             ("s-mono", "Mono output (off = stereo)", c.mono),
                                             ("s-lyrics", "Show lyrics", c.lyrics),
+                                            ("s-art", "Album cover art (off = rotating CD)",
+                                             c.art_mode == "album"),
                                             ("s-shuffle", "Shuffle mode", c.shuffle)):
                         with Horizontal(classes="field"):
                             yield Switch(value=val, id=sid)
@@ -490,6 +492,7 @@ class SettingsScreen(Menu):
             c.normalize = self.query_one("#s-norm", Switch).value
             c.mono = self.query_one("#s-mono", Switch).value
             c.lyrics = self.query_one("#s-lyrics", Switch).value
+            c.art_mode = "album" if self.query_one("#s-art", Switch).value else "disc"
             c.shuffle = self.query_one("#s-shuffle", Switch).value
             try:
                 c.loudness_target = max(-30.0, min(-5.0, float(self.query_one("#s-lufs", Input).value)))
