@@ -10,6 +10,8 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-03
+
 ### Fixed
 - A damaged audio file could freeze playback after a few seconds on Windows (ffmpeg's
   error output filled up and blocked it).
@@ -73,6 +75,7 @@ turns that section into the next version.
   scoop, choco), with a bundled `imageio-ffmpeg` fallback. `TERMUXPL_FFMPEG`
   overrides the choice.
 
-[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mrvirus5639-art/termux-pl/releases/tag/v1.0.0
