@@ -15,7 +15,7 @@ from textual.widgets import (Button, DataTable, Input, Label, Markdown, Static,
                              Switch, TabbedContent, TabPane)
 
 from . import acoustid_lookup, store
-from .library import write_tags
+from .library import read_edit_tags, write_tags
 from .models import Track, fmt_time
 
 
@@ -35,9 +35,20 @@ class Menu(ModalScreen):
     """Base for full-size modal menus."""
     BINDINGS = [Binding("escape", "dismiss_menu", "Close")]
     TITLE_TEXT = ""
+    _armed: tuple[str, float] | None = None
 
     def action_dismiss_menu(self) -> None:
         self.dismiss(None)
+
+    def confirmed(self, what: str, prompt: str) -> bool:
+        """Two-step confirm for destructive buttons: press once to arm, again within 4 s."""
+        now = time.monotonic()
+        if self._armed and self._armed[0] == what and now - self._armed[1] < 4:
+            self._armed = None
+            return True
+        self._armed = (what, now)
+        self.notify(prompt, severity="warning", timeout=4)
+        return False
 
 
 # =============================================================== playlists
@@ -57,6 +68,7 @@ class PlaylistScreen(Menu):
         self.current: str | None = None
         self.items: list[Track] = []
         self.lib_view: list[Track] = library_tracks[:500]
+        self._lib_matches = len(library_tracks)
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="menu"):
@@ -127,6 +139,9 @@ class PlaylistScreen(Menu):
         t.clear()
         for tr in self.lib_view:
             t.add_row(Text(tr.display_title[:60]), Text(tr.display_artist[:30]))
+        box = self.query_one("#pl-lib-box")
+        box.border_subtitle = (f"showing {len(self.lib_view)} of {self._lib_matches} · type to filter"
+                               if self._lib_matches > len(self.lib_view) else f"{self._lib_matches} tracks")
 
     def save(self) -> None:
         if self.current:
@@ -156,7 +171,9 @@ class PlaylistScreen(Menu):
 
     @on(Input.Changed, "#pl-filter")
     def _filter(self, ev: Input.Changed) -> None:
-        self.lib_view = self.app.library.search(ev.value, self.lib)[:500]
+        matches = self.app.library.search(ev.value, self.lib)
+        self._lib_matches = len(matches)
+        self.lib_view = matches[:500]
         self.fill_lib()
 
     @on(Input.Submitted, "#pl-name")
@@ -172,11 +189,17 @@ class PlaylistScreen(Menu):
             self._create()
         elif bid == "pl-rename" and self.current:
             new = name_in.value.strip()
-            if new:
+            if not new:
+                self.notify("Type the new name in the box first", severity="warning")
+            elif new != self.current and new in store.list_playlists():
+                self.notify("A playlist with that name already exists", severity="warning")
+            else:
                 self.current = store.rename_playlist(self.current, new)
                 name_in.value = ""
                 self.reload_list(self.current)
         elif bid == "pl-delete" and self.current:
+            if not self.confirmed("delete", f"Press Delete again to remove '{self.current}'"):
+                return
             store.delete_playlist(self.current)
             self.current = None
             self.reload_list()
@@ -242,6 +265,8 @@ class MetadataScreen(Menu):
         self.track = track
         self.api_key = api_key
         self.candidates: list[dict] = []
+        # Start from what is really in the file; only changed fields get written.
+        self.original = read_edit_tags(track.source)
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="menu"):
@@ -253,7 +278,7 @@ class MetadataScreen(Menu):
                     for key, label in FIELDS:
                         with Horizontal(classes="field"):
                             yield Label(f"{label:<8}", classes="flabel")
-                            yield Input(value=str(getattr(self.track, key, "") or ""), id=f"md-{key}")
+                            yield Input(value=self.original.get(key, ""), id=f"md-{key}")
                     with Horizontal(classes="btns"):
                         yield Button("Save tags", id="md-save", variant="primary")
                         yield Button("Fetch from AcoustID", id="md-fetch")
@@ -269,7 +294,12 @@ class MetadataScreen(Menu):
 
     @on(Button.Pressed, "#md-save")
     def _save(self) -> None:
-        fields = {k: self.query_one(f"#md-{k}", Input).value for k, _ in FIELDS}
+        values = {k: self.query_one(f"#md-{k}", Input).value.strip() for k, _ in FIELDS}
+        fields = {k: v for k, v in values.items() if v != self.original.get(k, "")}
+        if not fields:
+            self.notify("Nothing changed")
+            self.dismiss(None)
+            return
         try:
             write_tags(self.track.source, fields)
         except Exception as exc:
@@ -391,6 +421,8 @@ class HistoryScreen(Menu):
             else:
                 self.notify("No history yet", severity="warning")
         elif bid == "h-clear":
+            if not self.confirmed("clear", "Press Clear history again to erase all listening history"):
+                return
             self.history.clear()
             self.fill()
             self.notify("History cleared")
@@ -417,7 +449,7 @@ class SettingsScreen(Menu):
                                 id="s-newdir")
                     with Horizontal(classes="btns"):
                         yield Button("Add path", id="s-add", variant="primary")
-                        yield Button("Remove selected", id="s-remove")
+                        yield Button("Remove", id="s-remove")
                 with VerticalScroll(classes="col box") as v:
                     v.border_title = "PLAYBACK & SERVICES"
                     for sid, label, val in (("s-norm", "Loudness normalization", c.normalize),
@@ -497,11 +529,13 @@ class SettingsScreen(Menu):
             try:
                 c.loudness_target = max(-30.0, min(-5.0, float(self.query_one("#s-lufs", Input).value)))
             except ValueError:
-                pass
+                self.app.notify("Target LUFS must be a number like -14; kept the old value",
+                                severity="warning")
             try:
                 c.online_results = max(5, min(50, int(self.query_one("#s-hits", Input).value)))
             except ValueError:
-                pass
+                self.app.notify("Online hits must be a whole number; kept the old value",
+                                severity="warning")
             dl = clean_path(self.query_one("#s-dl", Input).value)
             if dl:
                 c.download_dir = dl

@@ -1,5 +1,5 @@
 import termuxpl
-from termuxpl.library import Library, fold, sort_tracks
+from termuxpl.library import Library, fold, index_track, sort_tracks
 from termuxpl.lyrics import Lyrics, clean_query, parse_lrc
 from termuxpl.models import Track, fmt_size, fmt_time
 from termuxpl import store
@@ -27,7 +27,7 @@ def _lib(*specs):
     lib.tracks = []
     for i, (title, artist) in enumerate(specs):
         t = Track(source=f"/m/{i}.mp3", title=title, artist=artist, index=i)
-        t.search_key = fold(f"{title} {artist} {t.source}")
+        index_track(t)
         lib.tracks.append(t)
     return lib
 

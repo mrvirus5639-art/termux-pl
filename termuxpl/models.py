@@ -22,6 +22,8 @@ class Track:
     thumbnail: str = ""
     index: int = 0              # position in folder order
     search_key: str = field(default="", repr=False)
+    search_title: str = field(default="", repr=False)
+    search_artist: str = field(default="", repr=False)
 
     @property
     def key(self) -> str:
@@ -42,7 +44,8 @@ class Track:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d.pop("search_key", None)
+        for k in ("search_key", "search_title", "search_artist"):
+            d.pop(k, None)
         return d
 
     @classmethod

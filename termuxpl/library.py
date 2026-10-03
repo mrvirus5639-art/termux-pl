@@ -76,6 +76,35 @@ def read_tags(path: str) -> dict:
     return info
 
 
+EDIT_TAGS = {"title": "title", "artist": "artist", "album": "album",
+             "year": "date", "genre": "genre", "track": "tracknumber"}
+
+
+def read_edit_tags(path: str) -> dict:
+    """Tags exactly as stored in the file, for the metadata editor.
+
+    Unlike read_tags() this keeps the full date ("1996-05-01", not "1996") and
+    the track number ("7/12"), so saving the editor never shortens or drops them.
+    """
+    out = {k: "" for k in EDIT_TAGS}
+    if mutagen is None:
+        return out
+    try:
+        f = mutagen.File(path, easy=True)
+    except Exception:
+        f = None
+    if f is None or f.tags is None:
+        return out
+    for key, tag in EDIT_TAGS.items():
+        try:
+            v = f.tags.get(tag)
+        except Exception:
+            v = None
+        if v:
+            out[key] = str(v[0] if isinstance(v, (list, tuple)) else v).strip()
+    return out
+
+
 def write_tags(path: str, fields: dict) -> None:
     """Write title/artist/album/date/genre/tracknumber. Raises on failure."""
     f = mutagen.File(path, easy=True)
@@ -83,9 +112,7 @@ def write_tags(path: str, fields: dict) -> None:
         raise ValueError("Unsupported file type")
     if f.tags is None:
         f.add_tags()
-    mapping = {"title": "title", "artist": "artist", "album": "album",
-               "year": "date", "genre": "genre", "track": "tracknumber"}
-    for k, tag in mapping.items():
+    for k, tag in EDIT_TAGS.items():
         if k not in fields:
             continue
         val = (fields[k] or "").strip()
@@ -144,8 +171,30 @@ def read_cover(path: str) -> bytes | None:
     return None
 
 
+# Windows cloud placeholders (OneDrive "Files On-Demand" and similar). Opening
+# such a file to read its tags makes Windows download it, so a scan of a synced
+# Music folder would pull the whole library down. We list them by file name and
+# read the tags once they are actually on disk.
+_CLOUD_ATTRS = 0x1000 | 0x40000 | 0x400000  # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+
+
+def _is_cloud_only(st) -> bool:
+    return bool(getattr(st, "st_file_attributes", 0) & _CLOUD_ATTRS)
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def index_track(t: Track) -> None:
+    """Fill the pre-folded search fields used by Library.search."""
+    t.search_title = fold(t.title)
+    t.search_artist = fold(t.artist)
+    t.search_key = fold(" ".join((t.title, t.artist, t.album, t.genre, t.source)))
+
+
 def _walk(root: str):
-    """Iterative scandir walk yielding (path, size, mtime) in folder order."""
+    """Iterative scandir walk yielding (path, size, mtime, cloud_only) in folder order."""
     stack = [root]
     while stack:
         d = stack.pop()
@@ -162,7 +211,7 @@ def _walk(root: str):
                         subdirs.append(e.path)
                 elif os.path.splitext(e.name)[1].lower() in AUDIO_EXTS:
                     st = e.stat()
-                    yield e.path, st.st_size, int(st.st_mtime)
+                    yield e.path, st.st_size, int(st.st_mtime), _is_cloud_only(st)
             except OSError:
                 continue
         stack.extend(reversed(subdirs))
@@ -171,6 +220,7 @@ def _walk(root: str):
 class Library:
     def __init__(self):
         self.tracks: list[Track] = []
+        self._by_path: dict[str, Track] = {}
         self._lock = threading.Lock()
         self._cache: dict[str, dict] = {}
         self._load_cache()
@@ -196,14 +246,19 @@ class Library:
         for root in dirs:
             if not root or not os.path.isdir(root):
                 continue
-            for path, size, mtime in _walk(root):
-                nkey = os.path.normcase(os.path.abspath(path))
+            for path, size, mtime, cloud in _walk(root):
+                nkey = _norm(path)
                 if nkey in seen:
                     continue
                 seen.add(nkey)
                 c = self._cache.get(nkey)
-                if not c or c.get("size") != size or c.get("mtime") != mtime:
-                    c = read_tags(path)
+                stale = (not c or c.get("size") != size or c.get("mtime") != mtime
+                         or (c.get("cloud") and not cloud))
+                if stale:
+                    if cloud:
+                        c = {"cloud": True}       # don't trigger a download just for tags
+                    else:
+                        c = read_tags(path)
                     c["size"] = size
                     c["mtime"] = mtime
                 new_cache[nkey] = c
@@ -215,12 +270,13 @@ class Library:
                 if not t.title:
                     t.title = os.path.splitext(os.path.basename(path))[0]
                 t.index = len(tracks)
-                t.search_key = fold(" ".join((t.title, t.artist, t.album, t.genre, path)))
+                index_track(t)
                 tracks.append(t)
                 if progress and len(tracks) % 200 == 0:
                     progress(len(tracks))
         with self._lock:
             self.tracks = tracks
+            self._by_path = {_norm(t.source): t for t in tracks}
             self._cache = new_cache
         self._save_cache()
         return tracks
@@ -232,21 +288,19 @@ class Library:
             setattr(t, k, v)
         if not t.title:
             t.title = os.path.splitext(os.path.basename(t.source))[0]
-        t.search_key = fold(" ".join((t.title, t.artist, t.album, t.genre, t.source)))
+        index_track(t)
         try:
             st = os.stat(t.source)
-            nkey = os.path.normcase(os.path.abspath(t.source))
+            nkey = _norm(t.source)
             self._cache[nkey] = {**info, "size": st.st_size, "mtime": int(st.st_mtime)}
             self._save_cache()
         except OSError:
             pass
 
     def find(self, source: str) -> Track | None:
-        n = os.path.normcase(os.path.abspath(source))
-        for t in self.tracks:
-            if os.path.normcase(os.path.abspath(t.source)) == n:
-                return t
-        return None
+        if not source or source.startswith(("http://", "https://")):
+            return None
+        return self._by_path.get(_norm(source))
 
     def search(self, query: str, tracks: list[Track] | None = None) -> list[Track]:
         tracks = self.tracks if tracks is None else tracks
@@ -257,8 +311,8 @@ class Library:
         for t in tracks:
             key = t.search_key
             if all(term in key for term in terms):
-                title = fold(t.title)
-                artist = fold(t.artist)
+                title = t.search_title
+                artist = t.search_artist
                 score = 0
                 for term in terms:
                     if title.startswith(term):

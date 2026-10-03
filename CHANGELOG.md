@@ -10,6 +10,33 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+### Fixed
+- A damaged audio file could freeze playback after a few seconds on Windows (ffmpeg's
+  error output filled up and blocked it).
+- Saving in the metadata editor deleted the track number and cut full dates such as
+  `1996-05-01` down to `1996`. It now only writes the fields you change.
+- The queue's title column was squeezed to a few characters when the queue first
+  appeared, and lists could scroll sideways.
+- Small windows (down to 80×24) scrolled and squeezed the track info; the layout now
+  adapts and the art stays square.
+- Pressing space while a track was still loading started it a second time.
+- If the audio device disappears (headphones switched off, USB DAC unplugged), the
+  player reconnects to the default device instead of going silent.
+- Several unplayable files in a row no longer make the player skip through the whole
+  list; it stops after three and says why. Error messages are shorter and clearer.
+- Renaming a playlist to an existing name overwrote that playlist.
+- On OneDrive-synced folders, scanning no longer downloads every cloud-only file just
+  to read its tags.
+- A cover or waveform from the previous track could appear after switching quickly.
+
+### Changed
+- Deleting a playlist and clearing history ask for a second press.
+- Local search waits for a short pause in typing and is faster on big libraries.
+- Tracks played from playlists or history show their full details (album, format…).
+- The playlist library list says when it only shows the first 500 matches.
+- Online tracks longer than 15 minutes no longer download a second time just to
+  draw the waveform.
+
 ## [1.0.1] - 2026-10-03
 
 ### Added

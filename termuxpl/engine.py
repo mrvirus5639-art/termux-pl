@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 import numpy as np
@@ -100,6 +102,47 @@ def _ffmpeg_input_args(src: str, headers: dict | None) -> list[str]:
     return args
 
 
+def _drain(pipe, sink: deque) -> None:
+    """Read a pipe until EOF, keeping only the last few lines.
+
+    ffmpeg's stderr must be read continuously: a damaged file can print an error
+    for every frame, and once the pipe buffer is full (about 4 KB on Windows)
+    ffmpeg blocks and playback freezes.
+    """
+    try:
+        for line in iter(pipe.readline, b""):
+            sink.append(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+_FF_PREFIX = re.compile(r"\[[^\]\s]+ @ 0x[0-9a-fA-F]+\]\s*")
+
+
+def clean_ffmpeg_error(raw: bytes) -> str:
+    """First meaningful line of ffmpeg's error output, without '[mp3 @ 0x55..]' tags."""
+    for line in raw.decode(errors="replace").splitlines():
+        line = _FF_PREFIX.sub("", line).strip()
+        if line:
+            return line[:200]
+    return ""
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    """Wait for a killed process in the background so it doesn't linger."""
+    def wait():
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+    threading.Thread(target=wait, daemon=True).start()
+
+
 class _NullOutput:
     """Fallback 'sound card' that just consumes samples in real time.
 
@@ -171,15 +214,54 @@ class AudioEngine:
         self._bands_smooth: np.ndarray | None = None
 
         self.backend = "portaudio"
+        self._last_reopen = 0.0
         try:
-            import sounddevice as sd  # noqa: WPS433
-            self._stream = sd.OutputStream(samplerate=self.sr, channels=CHANNELS,
-                                           dtype="float32", blocksize=BLOCK,
-                                           callback=self._callback)
+            self._stream = self._open_stream()
         except Exception as exc:  # PortAudio missing / no device
             self.backend = f"silent ({exc.__class__.__name__})"
             self._stream = _NullOutput(self.sr, self._callback)
-        self._stream.start()
+            self._stream.start()
+
+    def _open_stream(self):
+        import sounddevice as sd  # noqa: WPS433
+        stream = sd.OutputStream(samplerate=self.sr, channels=CHANNELS, dtype="float32",
+                                 blocksize=BLOCK, callback=self._callback)
+        stream.start()
+        return stream
+
+    def ensure_output(self) -> bool:
+        """Reopen the sound device if its stream died.
+
+        Happens when the output device disappears (Bluetooth headphones switched
+        off, USB DAC unplugged). PortAudio then stops calling us for good, so we
+        rescan devices and open the current default one. Returns True if reopened.
+        """
+        if isinstance(self._stream, _NullOutput):
+            return False
+        try:
+            if self._stream.active:
+                return False
+        except Exception:
+            pass
+        now = time.monotonic()
+        if now - self._last_reopen < 3.0:
+            return False
+        self._last_reopen = now
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+        try:
+            import sounddevice as sd  # noqa: WPS433
+            sd._terminate()   # refresh PortAudio's device list so the new default is used
+            sd._initialize()
+        except Exception:
+            pass
+        try:
+            self._stream = self._open_stream()
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ decoder
     def _filters(self) -> str:
@@ -215,9 +297,14 @@ class AudioEngine:
         self._offset = start
         self._frames = 0
         self._eof = False
-        threading.Thread(target=self._reader, args=(proc, gen), daemon=True).start()
+        errlines: deque = deque(maxlen=8)
+        drainer = threading.Thread(target=_drain, args=(proc.stderr, errlines), daemon=True)
+        drainer.start()
+        threading.Thread(target=self._reader, args=(proc, gen, errlines, drainer),
+                         daemon=True).start()
 
-    def _reader(self, proc: subprocess.Popen, gen: int) -> None:
+    def _reader(self, proc: subprocess.Popen, gen: int, errlines: deque,
+                drainer: threading.Thread) -> None:
         nbytes = BLOCK * 4 * CHANNELS * 4
         stdout = proc.stdout
         leftover = b""
@@ -236,14 +323,11 @@ class AudioEngine:
                 except queue.Full:
                     continue
         if gen == self._gen:
-            err = b""
-            try:
-                err = proc.stderr.read() or b""
-            except Exception:
-                pass
             rc = proc.wait()
+            drainer.join(timeout=1.0)     # make sure the error text has been collected
+            err = b"".join(errlines)
             if rc not in (0, None) and self._frames == 0 and self._q.empty():
-                self.error = err.decode(errors="replace").strip()[-300:] or f"ffmpeg exited {rc}"
+                self.error = clean_ffmpeg_error(err) or f"ffmpeg exited {rc}"
             self._eof = True
 
     def _kill(self) -> None:
@@ -254,6 +338,7 @@ class AudioEngine:
                 p.kill()
             except OSError:
                 pass
+            _reap(p)
         try:
             while True:
                 self._q.get_nowait()

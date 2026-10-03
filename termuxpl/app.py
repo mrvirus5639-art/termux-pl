@@ -99,6 +99,9 @@ class TermuxPL(App):
         self._play_token = 0
         self._loading = False
         self._last_error = None
+        self._fail_streak = 0          # tracks in a row that ended without playing
+        self._search_timer = None
+        self._tick_count = 0
 
     # ----------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -155,6 +158,7 @@ class TermuxPL(App):
         self._apply_lyrics_visibility()
         self.query_one("#info", InfoView).show(None, "Scanning library…" if self.cfg.music_dirs else
                                                "Currently No Track Loaded")
+        self.call_after_refresh(self._fit_layout)
         self._ticker = self.set_interval(1 / 20, self._tick)
         self.scan_library()
         res.focus()
@@ -218,17 +222,40 @@ class TermuxPL(App):
             box.border_subtitle = f"( {len(self.local_view)} tracks )"
 
     def _size_columns(self) -> None:
-        for tid, fixed in (("#results", 4 + 8 + 10), ("#queue", 3 + 8 + 10)):
+        # Share the width between Title and Artist. Measured inside the border,
+        # minus the fixed columns, 1 cell of padding each side of all 4 columns,
+        # and the vertical scrollbar, so the table never scrolls sideways.
+        for tid in ("#results", "#queue"):
             t = self.query_one(tid, DataTable)
-            avail = max(20, t.size.width - fixed)
             cols = list(t.columns.values())
-            if len(cols) == 4:
-                cols[1].width = int(avail * 0.62)
-                cols[2].width = avail - int(avail * 0.62)
-                cols[1].auto_width = cols[2].auto_width = False
-            t.refresh()
+            if len(cols) != 4 or not t.display:
+                continue
+            fixed = cols[0].width + cols[3].width + 2 * 4 + 1
+            avail = max(12, t.content_size.width - fixed)
+            cols[1].width = int(avail * 0.62)
+            cols[2].width = avail - cols[1].width
+            cols[1].auto_width = cols[2].auto_width = False
+            # DataTable only recomputes its scrollable width when rows change;
+            # ask it to do so now that the column widths changed.
+            if hasattr(t, "_require_update_dimensions"):
+                t._require_update_dimensions = True
+            if hasattr(t, "_clear_caches"):
+                t._clear_caches()
+            t.refresh(layout=True)
+
+    def _fit_layout(self) -> None:
+        """Adapt the top panel to the window: square art, drop extras when tight."""
+        top = self.query_one("#top")
+        h = max(1, top.content_size.height)
+        w = self.size.width
+        art = self.query_one("#art")
+        # A braille cell is 2x4 dots and about 1:2 in shape, so 2 columns per row.
+        art.styles.width = max(12, min(2 * h, 44, w // 3))
+        self.query_one("#sep").display = w >= 100
+        self.query_one("#minispec").display = h >= 10
 
     def on_resize(self, _event) -> None:
+        self.call_after_refresh(self._fit_layout)
         self.call_after_refresh(self._size_columns)
 
     @property
@@ -245,8 +272,16 @@ class TermuxPL(App):
         if val.startswith("/l ") and self.online_mode:
             self._set_mode(False, keep_text=val[3:])
             return
+        if val.startswith("/s ") and self.online_mode:
+            with ev.input.prevent(Input.Changed):
+                ev.input.value = val[3:]
+            return
         if not self.online_mode:
-            self._filter_local(val)
+            # Wait for a short pause in typing so big libraries stay responsive.
+            if self._search_timer is not None:
+                self._search_timer.stop()
+            self._search_timer = self.set_timer(0.12, lambda: self._filter_local(
+                self.query_one("#search", Input).value))
 
     @on(Input.Submitted, "#search")
     def _search_submit(self, ev: Input.Submitted) -> None:
@@ -331,10 +366,15 @@ class TermuxPL(App):
         self.context_idx = index
         self.play(tracks[index])
 
-    def play(self, track: Track, push_back: bool = True) -> None:
+    def play(self, track: Track, push_back: bool = True, auto: bool = False) -> None:
         if not FFMPEG:
             self._status("[b red]ffmpeg not found - run: pip install imageio-ffmpeg  (then restart)[/]")
             return
+        if not auto:
+            self._fail_streak = 0
+        # Tracks from playlists and history only carry title/artist/duration;
+        # use the library's copy so the info panel shows album, format, etc.
+        track = self.library.find(track.source) or track
         if push_back and self.now is not None:
             self.back_stack.append(self.now)
             self.back_stack = self.back_stack[-200:]
@@ -347,8 +387,11 @@ class TermuxPL(App):
         token = self._play_token
         self.now = track
         self.lyrics = None
+        self._last_error = None
         if self._wave_cancel:
             self._wave_cancel.set()
+        cancel = threading.Event()
+        self._wave_cancel = cancel
         self.engine.stop()
         self.query_one("#wave", WaveView).set_levels(None)
         self.query_one("#wave", WaveView).set_progress(0)
@@ -358,10 +401,10 @@ class TermuxPL(App):
         self._loading = True
         self._update_play_button()
         self._mark_playing_row()
-        self._start_track(track, token)
+        self._start_track(track, token, cancel)
 
     @work(thread=True, group="player")
-    def _start_track(self, track: Track, token: int) -> None:
+    def _start_track(self, track: Track, token: int, cancel: threading.Event) -> None:
         src, headers = track.source, None
         if track.is_online:
             try:
@@ -379,14 +422,23 @@ class TermuxPL(App):
         # side-loads: cover, lyrics, waveform
         cover = online.fetch_bytes(track.thumbnail) if track.is_online and track.thumbnail \
             else (None if track.is_online else read_cover(src))
-        if token == self._play_token:
-            self.call_from_thread(self.query_one("#art", ArtView).set_cover, cover)
-        cancel = threading.Event()
-        self._wave_cancel = cancel
+        self.call_from_thread(self._set_cover, cover, token)
         self._load_lyrics(track, token)
+        # A waveform of an online track means downloading it a second time, so
+        # only do that for normal song lengths.
+        if track.is_online and (not track.duration or track.duration > 15 * 60):
+            return
         levels = compute_waveform(src, headers, buckets=500, cancel=cancel)
-        if token == self._play_token and levels is not None:
-            self.call_from_thread(self.query_one("#wave", WaveView).set_levels, levels)
+        if levels is not None:
+            self.call_from_thread(self._set_levels, levels, token)
+
+    def _set_cover(self, cover, token: int) -> None:
+        if token == self._play_token:
+            self.query_one("#art", ArtView).set_cover(cover)
+
+    def _set_levels(self, levels, token: int) -> None:
+        if token == self._play_token:
+            self.query_one("#wave", WaveView).set_levels(levels)
 
     @work(thread=True, group="lyrics")
     def _load_lyrics(self, track: Track, token: int) -> None:
@@ -454,9 +506,21 @@ class TermuxPL(App):
         self.context_idx = nxt
         return pool[nxt]
 
-    def _track_ended(self) -> None:
-        if self.cfg.repeat == "one" and self.now is not None:
-            self.play(self.now, push_back=False)
+    def _track_ended(self, played: bool = True) -> None:
+        if not played:
+            # The track ended without producing audio (unreadable file, dead
+            # stream). Skip on, but don't spin through a whole broken library.
+            self._fail_streak += 1
+            if self._fail_streak >= 3:
+                self.engine.stop()
+                self._update_play_button()
+                self._status("[red]Stopped: 3 tracks in a row could not be played.[/] "
+                             + esc(self.engine.error or ""))
+                return
+        else:
+            self._fail_streak = 0
+        if self.cfg.repeat == "one" and self.now is not None and played:
+            self.play(self.now, push_back=False, auto=True)
             return
         nxt = self._next_track()
         if nxt is None:
@@ -464,9 +528,11 @@ class TermuxPL(App):
             self.engine.stop()
             self._update_play_button()
         else:
-            self.play(nxt)
+            self.play(nxt, auto=True)
 
     def action_toggle_play(self) -> None:
+        if self._loading:
+            return  # a track is already starting
         if not self.engine.loaded:
             if self.now is not None:
                 self.play(self.now, push_back=False)
@@ -638,8 +704,12 @@ class TermuxPL(App):
         for i, tr in enumerate(self.queue, 1):
             q.add_row(str(i), Text(tr.display_title), Text(tr.display_artist), fmt_time(tr.duration))
         empty = not self.queue
+        was_hidden = not q.display
         self.query_one("#queue-empty").display = empty
         q.display = not empty
+        if was_hidden and not empty:
+            # Its columns were sized while it had no width; size them now.
+            self.call_after_refresh(self._size_columns)
         self.query_one("#queuebox").border_subtitle = f"( {len(self.queue)} queued )" if self.queue else ""
         if cursor is not None and self.queue:
             q.move_cursor(row=min(cursor, len(self.queue) - 1))
@@ -681,6 +751,9 @@ class TermuxPL(App):
         def done(fields):
             if fields:
                 self.library.refresh_track(target)
+                lib_copy = self.library.find(target.source)
+                if lib_copy is not None and lib_copy is not target:
+                    self.library.refresh_track(lib_copy)
                 if not self.online_mode:
                     self._filter_local(self.query_one("#search", Input).value)
                 if self.now is not None and self.now.source == target.source:
@@ -739,8 +812,12 @@ class TermuxPL(App):
             self._status(f"[red]Playback error:[/] {esc(e.error[:200])}")
         if e.finished and e.loaded and not self._loading:
             e.finished = False
-            self._track_ended()
+            self._track_ended(played=e.position > 0.5)
             return
+        self._tick_count += 1
+        if self._tick_count % 40 == 0 and e.loaded and not e.paused:   # every ~2 s
+            if e.ensure_output():
+                self._status("Audio device changed - reconnected to the default output")
         playing = e.loaded and not e.paused
         bands = e.spectrum(40) if (playing or e.loaded) else None
         if bands is not None:
