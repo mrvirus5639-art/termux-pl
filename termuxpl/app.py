@@ -83,7 +83,8 @@ class TermuxPL(App):
         super().__init__()
         self.cfg = Config.load()
         self.engine = AudioEngine(self.cfg.sample_rate, self.cfg.volume, self.cfg.normalize,
-                                  self.cfg.loudness_target, self.cfg.mono)
+                                  self.cfg.loudness_target, self.cfg.mono,
+                                  buffer_ms=self.cfg.audio_buffer_ms)
         self.library = Library()
         self.history = History()
         self.online_mode = False
@@ -102,6 +103,7 @@ class TermuxPL(App):
         self._fail_streak = 0          # tracks in a row that ended without playing
         self._search_timer = None
         self._tick_count = 0
+        self._underruns_seen = 0
 
     # ----------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -818,6 +820,10 @@ class TermuxPL(App):
         if self._tick_count % 40 == 0 and e.loaded and not e.paused:   # every ~2 s
             if e.ensure_output():
                 self._status("Audio device changed - reconnected to the default output")
+            elif e.underruns > self._underruns_seen:
+                self._underruns_seen = e.underruns
+                self._status(f"[yellow]Audio dropouts: {e.underruns}.[/] If you hear crackles, raise "
+                             f"audio_buffer_ms (now {e.buffer_ms}) in ~/.termuxpl/config.json")
         playing = e.loaded and not e.paused
         bands = e.spectrum(40) if (playing or e.loaded) else None
         if bands is not None:

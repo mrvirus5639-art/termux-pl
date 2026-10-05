@@ -10,6 +10,13 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+### Fixed
+- Crackling, distorted sound ("like a worn-out radio") on Windows. The sound card was
+  only given ~90 ms of audio, and Python can't always refill it that fast while the
+  screen is being drawn, so it kept running dry. It now buffers 250 ms
+  (`audio_buffer_ms` in config.json); the shown position, lyrics and visualizer account
+  for that delay, and the status bar reports dropouts if they still happen.
+
 ## [1.0.2] - 2026-10-03
 
 ### Fixed

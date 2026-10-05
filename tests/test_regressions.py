@@ -263,3 +263,59 @@ def test_delete_playlist_needs_second_press(tmp_path):
             await pilot.pause(0.1)
             assert "Temp" not in store.list_playlists()
     asyncio.run(run())
+
+
+# ------------------------------------------------------------- audio buffer
+def _engine_with_latency(lat_frames):
+    e = engine_mod.AudioEngine.__new__(engine_mod.AudioEngine)
+    e.sr = 48000
+    e.buffer_ms = 250
+    e._lat_frames = lat_frames
+    e._in_buf = 0
+    e._frames = 0
+    e._offset = 10.0
+    e.underruns = 0
+    e.loaded, e.paused = True, False
+    e.finished = False
+    e._eof = False
+    e._pending = None
+    e.volume = 100
+    import queue as _q
+    import threading as _t
+    e._q = _q.Queue()
+    e._lock = _t.Lock()
+    e._ring = np.zeros(2048 + lat_frames + 4096, dtype=np.float32)
+    e._ring_pos = 0
+    e._bands_smooth = None
+    return e
+
+
+def test_position_counts_only_audio_that_left_the_speakers():
+    """With a 250 ms sound-card buffer, the shown position (and so the lyrics)
+    must lag the frames handed over by the buffered amount."""
+    lat = 12000
+    e = _engine_with_latency(lat)
+    block = np.full((1024, 2), 0.1, dtype=np.float32)
+    out = np.zeros((1024, 2), dtype=np.float32)
+    for _ in range(40):                         # 40 blocks of audio handed over
+        e._q.put(block.copy())
+        e._callback(out, 1024, None, None)
+    handed = 40 * 1024
+    assert e._frames == handed
+    assert abs(e.position - (10.0 + (handed - lat) / 48000)) < 1e-6
+    e.paused = True                             # paused: the queued audio plays out
+    for _ in range(20):
+        e._callback(out, 1024, None, None)
+    assert abs(e.position - (10.0 + handed / 48000)) < 1e-6
+    assert e.spectrum(16).shape == (16,)
+
+
+def test_underruns_are_counted():
+    e = _engine_with_latency(0)
+
+    class Flags:
+        output_underflow = True
+    out = np.zeros((1024, 2), dtype=np.float32)
+    e._callback(out, 1024, None, Flags())
+    e._callback(out, 1024, None, None)
+    assert e.underruns == 1

@@ -29,6 +29,11 @@ import numpy as np
 
 CHANNELS = 2
 BLOCK = 1024
+# How much audio the sound card keeps queued. Python can't always run the audio
+# callback on time (the UI thread holds the interpreter while it draws), and
+# Windows' default output (MME) only buffers ~90 ms, so short stalls became
+# dropouts that sounded like crackle and distortion. 250 ms absorbs them.
+DEFAULT_BUFFER_MS = 250
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
 
 
@@ -185,8 +190,10 @@ class _NullOutput:
 
 class AudioEngine:
     def __init__(self, sample_rate: int = 48000, volume: int = 70,
-                 normalize: bool = True, loudness: float = -14.0, mono: bool = False):
+                 normalize: bool = True, loudness: float = -14.0, mono: bool = False,
+                 buffer_ms: int = DEFAULT_BUFFER_MS):
         self.sr = sample_rate
+        self.buffer_ms = max(40, min(2000, int(buffer_ms or DEFAULT_BUFFER_MS)))
         self.volume = volume
         self.normalize = normalize
         self.loudness = loudness
@@ -202,14 +209,18 @@ class AudioEngine:
         self._lock = threading.Lock()
 
         self._offset = 0.0     # seconds where the current decoder started
-        self._frames = 0       # frames played since decoder start
+        self._frames = 0       # frames handed to the sound card since decoder start
+        self._in_buf = 0       # of those, frames still queued in the sound card
+        self._lat_frames = 0   # size of the sound card's queue, in frames
+        self.underruns = 0     # times the sound card ran out of audio
         self.paused = True
         self.loaded = False
         self.finished = False  # set when a track plays to its end
         self.error: str | None = None
         self.duration = 0.0
 
-        self._ring = np.zeros(4096, dtype=np.float32)
+        self._ring = np.zeros(2048 + int(self.sr * self.buffer_ms / 1000) + BLOCK * 4,
+                              dtype=np.float32)
         self._ring_pos = 0
         self._bands_smooth: np.ndarray | None = None
 
@@ -225,8 +236,14 @@ class AudioEngine:
     def _open_stream(self):
         import sounddevice as sd  # noqa: WPS433
         stream = sd.OutputStream(samplerate=self.sr, channels=CHANNELS, dtype="float32",
-                                 blocksize=BLOCK, callback=self._callback)
+                                 blocksize=BLOCK, latency=self.buffer_ms / 1000,
+                                 callback=self._callback)
         stream.start()
+        try:
+            lat = float(stream.latency)
+        except (TypeError, ValueError):
+            lat = self.buffer_ms / 1000
+        self._lat_frames = int(lat * self.sr)
         return stream
 
     def ensure_output(self) -> bool:
@@ -347,17 +364,33 @@ class AudioEngine:
         self._pending = None
 
     # ---------------------------------------------------------------- callback
-    def _callback(self, outdata, frames, _time, _status) -> None:
+    def _callback(self, outdata, frames, _time, status) -> None:
         # Never let an exception escape: PortAudio stops the stream for good if
         # the callback raises, which would silence the player until restart.
         try:
+            if status is not None and getattr(status, "output_underflow", False) \
+                    and self.loaded and not self.paused:
+                self.underruns += 1
             self._fill(outdata, frames)
         except Exception:
             outdata.fill(0)
 
+    def _account(self, frames: int, data: int) -> None:
+        """Track how much real audio is still queued in the sound card.
+
+        Each callback appends `data` frames of audio then `frames - data` of
+        silence; the oldest `frames` frames have meanwhile been played.
+        """
+        lat = self._lat_frames
+        if lat <= 0:
+            return
+        queued = min(lat, self._in_buf + data) - (frames - data)
+        self._in_buf = max(0, queued)
+
     def _fill(self, outdata, frames) -> None:
         if self.paused or not self.loaded:
             outdata.fill(0)
+            self._account(frames, 0)
             return
         with self._lock:
             filled = 0
@@ -378,6 +411,7 @@ class AudioEngine:
                         self.finished = True
                         self.paused = True
             self._frames += filled
+            self._account(frames, filled)
 
         if filled:
             mono = outdata[:filled].mean(axis=1)
@@ -435,7 +469,9 @@ class AudioEngine:
 
     @property
     def position(self) -> float:
-        return self._offset + self._frames / self.sr
+        """Where playback is, as heard: audio still queued in the sound card
+        hasn't reached the speakers yet."""
+        return self._offset + max(0, self._frames - self._in_buf) / self.sr
 
     def seek(self, seconds: float) -> None:
         if not self.loaded or not self._src:
@@ -473,9 +509,11 @@ class AudioEngine:
     def spectrum(self, bands: int) -> np.ndarray:
         """Return `bands` log-spaced magnitudes in 0..1 for the visualizer."""
         n = 2048
-        pos = self._ring_pos
         ring = self._ring
-        data = np.concatenate((ring[pos:], ring[:pos]))[-n:]
+        # Analyse what is coming out of the speakers now, not what was just
+        # queued: skip the audio still waiting in the sound card's buffer.
+        end = (self._ring_pos - min(self._in_buf, len(ring) - n)) % len(ring)
+        data = np.take(ring, np.arange(end - n, end), mode="wrap")
         if self.paused or not self.loaded:
             target = np.zeros(bands)
         else:

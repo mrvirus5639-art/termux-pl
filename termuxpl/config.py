@@ -54,6 +54,7 @@ class Config:
     sort: str = "folder"             # folder | title | artist | duration
     acoustid_key: str = ""
     sample_rate: int = 48000
+    audio_buffer_ms: int = 250       # sound-card buffer; raise it if you hear crackles
     online_results: int = 15
 
     @classmethod
