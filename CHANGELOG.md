@@ -10,6 +10,8 @@ turns that section into the next version.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-05
+
 ### Fixed
 - Crackling, distorted sound ("like a worn-out radio") on Windows. The sound card was
   only given ~90 ms of audio, and Python can't always refill it that fast while the
@@ -82,7 +84,8 @@ turns that section into the next version.
   scoop, choco), with a bundled `imageio-ffmpeg` fallback. `TERMUXPL_FFMPEG`
   overrides the choice.
 
-[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/mrvirus5639-art/termux-pl/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/mrvirus5639-art/termux-pl/releases/tag/v1.0.0
